@@ -13,3 +13,4 @@ torchaudio==2.5.1
 mutagen>=1.47.0
 pyinstaller>=6.0.0
 certifi
+soundfile
