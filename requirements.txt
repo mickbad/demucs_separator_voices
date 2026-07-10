@@ -1,0 +1,16 @@
+# Dépendances pour exécuter et compiler demucs_separator.py
+#
+# NOTE torch/torchaudio :
+# Sur certaines plateformes (notamment Windows/Linux sans GPU), il est conseillé
+# d'installer d'abord la version CPU de torch/torchaudio via l'index officiel
+# PyTorch, PUIS d'installer le reste. Voir le README.md, section "Prérequis".
+#
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#
+demucs>=4.0.0
+torch>=2.0.0
+torchaudio>=2.0.0
+mutagen>=1.47.0
+pyinstaller>=6.0.0
+torchcodec
+certifi
