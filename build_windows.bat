@@ -15,17 +15,17 @@ echo === Build Windows - demucs_separator ===
 
 where python >nul 2>nul
 if errorlevel 1 (
-    echo ERREUR: python introuvable dans le PATH.
-    echo Installez Python 3.9+ depuis https://www.python.org/downloads/
-    echo et cochez "Add python.exe to PATH" lors de l'installation.
-    exit /b 1
+echo ERREUR: python introuvable dans le PATH.
+echo Installez Python 3.9+ depuis https://www.python.org/downloads/
+echo et cochez "Add python.exe to PATH" lors de l'installation.
+exit /b 1
 )
 
 where ffmpeg >nul 2>nul
 if errorlevel 1 (
-    echo AVERTISSEMENT: ffmpeg n'est pas installe sur cette machine.
-    echo Il n'est pas requis pour la compilation, mais SERA requis a l'execution
-    echo sur la machine cible ^(voir README.md^).
+echo AVERTISSEMENT: ffmpeg n'est pas installe sur cette machine.
+echo Il n'est pas requis pour la compilation, mais SERA requis a l'execution
+echo sur la machine cible ^(voir README.md^).
 )
 
 echo [1/4] Creation de l'environnement virtuel de build...
@@ -46,7 +46,6 @@ pyinstaller  ^
   --collect-all demucs  ^
   --collect-all torch  ^
   --collect-all torchaudio  ^
-  --collect-all torchcodec  ^
   --collect-all julius  ^
   --collect-all openunmix  ^
   --collect-data certifi ^

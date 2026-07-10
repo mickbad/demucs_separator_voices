@@ -44,8 +44,8 @@ set "BIN="
 if not "%DEMUCS_BIN%"=="" (
     set "BIN=%DEMUCS_BIN%"
 ) else (
-    if exist "%SCRIPT_DIR%demucs_separator.exe" (
-        set "BIN=%SCRIPT_DIR%demucs_separator.exe"
+    if exist "%SCRIPT_DIR%dist/demucs_separator.exe" (
+        set "BIN=%SCRIPT_DIR%dist/demucs_separator.exe"
     ) else (
         for %%I in (demucs_separator.exe) do (
             if not "%%~$PATH:I"=="" set "BIN=%%~$PATH:I"

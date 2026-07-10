@@ -8,9 +8,8 @@
 #   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 #
 demucs>=4.0.0
-torch>=2.0.0
-torchaudio>=2.0.0
+torch==2.5.1
+torchaudio==2.5.1
 mutagen>=1.47.0
 pyinstaller>=6.0.0
-torchcodec
 certifi

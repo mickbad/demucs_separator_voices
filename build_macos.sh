@@ -161,7 +161,6 @@ pyinstaller \
   --collect-all demucs \
   --collect-all torch \
   --collect-all torchaudio \
-  --collect-all torchcodec \
   --collect-all julius \
   --collect-all openunmix \
   --collect-data certifi \
