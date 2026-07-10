@@ -1,0 +1,6 @@
+build/
+build_venv/
+dist/
+output/
+*.zip
+.DS_Store
