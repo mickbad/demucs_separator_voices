@@ -35,6 +35,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
+from datetime import timedelta
 
 __version__ = "1.0.0"
 
@@ -72,7 +73,8 @@ def emit(payload: dict):
 
 
 def emit_progress(progress: Optional[float], eta: Optional[int]):
-    emit({"running": True, "eta": eta, "progress": progress})
+    eta_human = timedelta(seconds=eta) if eta is not None else None
+    emit({"running": True, "eta": eta, "eta_human": str(eta_human) if eta_human else None, "progress": progress})
 
 
 def emit_success(voice_path: str, instruments_path: str):
