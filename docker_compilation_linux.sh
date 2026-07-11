@@ -26,7 +26,7 @@ echo
 echo "=== Build terminé ==="
 EOF
 
-docker run --rm -v "$(pwd)":/app -w /app python:3.12 bash /tmp/build_script.sh
+docker run --rm -v "$(pwd)":/app -v /tmp:/app-tmp -w /app python:3.12 bash /app-tmp/build_script.sh
 
 rm /tmp/build_script.sh
 

@@ -3,4 +3,6 @@ build_venv/
 dist/
 output/
 *.zip
+*.spec
+*.pyc
 .DS_Store
