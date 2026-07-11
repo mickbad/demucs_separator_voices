@@ -24,9 +24,6 @@ cd /app
 
 echo
 echo "=== Build terminé ==="
-
-# accès à la console 
-bash
 EOF
 
 docker run --rm -v "$(pwd)":/app -w /app python:3.12 bash /tmp/build_script.sh
