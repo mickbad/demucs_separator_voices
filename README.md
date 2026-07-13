@@ -18,6 +18,10 @@ Si le fichier source est un **MP3**, les tags **ID3** (titre, artiste, album,
 pochette/cover, année, etc.) sont automatiquement recopiés dans les deux
 fichiers générés.
 
+Support indie dev here :)
+
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-☕-FFDD00?style=for-the-badge)](https://buymeacoffee.com/mickbad)
+
 ---
 
 ## 1. Contenu du dépôt
