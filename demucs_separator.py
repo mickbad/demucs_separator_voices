@@ -3,23 +3,43 @@
 """
 demucs_separator.py
 
-Sépare un fichier audio en deux stems (voix / instruments) à l'aide de Demucs,
-et produit deux fichiers MP3 :
-    <nom>-voices.mp3
-    <nom>-instruments.mp3
+Sépare un fichier audio en 2, 4 ou 6 stems à l'aide de Demucs, et produit
+un fichier MP3 par stem, nommé <nom>-<stem>.mp3, à côté du fichier source.
 
-Si le fichier source est un MP3, les tags ID3 (titre, artiste, pochette, etc.)
-sont recopiés dans les deux fichiers de sortie.
+Nombre de stems (--stems, défaut 2) :
+    2 : voix / instruments                              (modèle htdemucs, mode two-stems)
+    4 : voix / percussions / instruments                (modèle htdemucs, séparation complète)
+    6 : voix / percussions / basse / guitare / piano / instruments (le reste)
+        (modèle htdemucs_6s, séparation complète)
+
+Le modèle Demucs correspondant (htdemucs ou htdemucs_6s) est téléchargé
+automatiquement par la librairie demucs lors du tout premier usage de ce
+modèle (mis en cache localement ensuite, voir README.md).
+
+Dispositif de calcul (--device, défaut auto) : auto (choisit automatiquement
+le meilleur dispositif disponible sur la machine, dans l'ordre de préférence
+cuda > mps > cpu), ou cpu/cuda/mps explicite. Si le dispositif demandé
+explicitement n'est pas disponible sur la machine, le programme replie
+automatiquement sur cpu (message envoyé sur stderr, sans jamais polluer le
+flux JSON de stdout).
+
+Si le fichier source est un MP3, les tags ID3 (titre, artiste, pochette,
+etc.) sont recopiés dans tous les fichiers de sortie générés.
 
 Usage:
-    demucs_separator [-h] [--version] fichier
+    demucs_separator [-h] [--version] [--stems {2,4,6}] [--device {cpu,cuda,mps}] fichier
 
 Sorties (une ligne JSON à la fois, sur stdout) :
     En cours de traitement :
-        {"running": true, "eta": <secondes|null>, "progres": <0-100|null>}
-    En fin de traitement (succès) :
-        {"running": false, "voice": "/chemin/vers/fichier-voices.mp3",
-         "intruments": "/chemin/vers/fichier-instruments.mp3", "err": ""}
+        {"running": true, "eta": <secondes|null>, "progress": <0-100|null>}
+    En fin de traitement (succès), les clés présentes dépendent de --stems :
+        --stems 2 (comportement historique, inchangé) :
+            {"running": false, "voice": "...", "intruments": "...", "err": null}
+        --stems 4 (ajoute "percussions") :
+            {"running": false, "voice": "...", "percussions": "...", "intruments": "...", "err": null}
+        --stems 6 (ajoute "percussions", "basse", "guitare", "piano") :
+            {"running": false, "voice": "...", "percussions": "...", "basse": "...",
+             "guitare": "...", "piano": "...", "intruments": "...", "err": null}
     En cas d'erreur :
         {"running": false, "err": "message d'erreur"}
 """
@@ -34,10 +54,13 @@ import platform
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, List
 from datetime import timedelta
 
-__version__ = "1.0.0"
+import numpy as np
+import soundfile as sf
+
+__version__ = "2.0.0"
 
 
 # --------------------------------------------------------------------------
@@ -59,7 +82,27 @@ def _setup_ssl_certs():
         pass
 
 
+def _setup_mps_fallback():
+    """
+    Certaines opérations de Demucs (dans la partie "transformer hybride" du
+    modèle htdemucs) ne sont pas supportées nativement par le backend MPS
+    de PyTorch sur Apple Silicon, ce qui provoque une erreur du type :
+
+        Output channels > 65536 not supported at the MPS device.
+
+    Cette variable d'environnement autorise PyTorch à replier automatiquement
+    UNIQUEMENT ces opérations précises sur le CPU, en gardant le reste du
+    calcul sur le GPU MPS (plus lent pour ces opérations spécifiques, mais
+    fonctionnel). Elle doit être positionnée avant tout import de torch pour
+    être prise en compte de façon fiable, d'où son placement ici, tout en
+    haut du fichier — que --device mps soit demandé explicitement ou choisi
+    automatiquement par --device auto.
+    """
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
+
 _setup_ssl_certs()
+_setup_mps_fallback()
 
 
 # --------------------------------------------------------------------------
@@ -77,8 +120,19 @@ def emit_progress(progress: Optional[float], eta: Optional[int]):
     emit({"running": True, "eta": eta, "eta_human": str(eta_human) if eta_human else None, "progress": progress})
 
 
-def emit_success(voice_path: str, instruments_path: str):
-    emit({"running": False, "voice": voice_path, "intruments": instruments_path, "err": None})
+def emit_success(outputs: Dict[str, str]):
+    """
+    Émet la ligne JSON finale de succès.
+
+    `outputs` est la map {clé_stem: chemin_fichier_mp3} renvoyée par process().
+    Seules les clés effectivement produites (donc dépendant de --stems) sont
+    incluses : avec --stems 2 on ne verra que "voice"/"intruments", avec
+    --stems 4 ou 6 les clés supplémentaires ("percussions", "basse", "guitare",
+    "piano") s'ajoutent naturellement puisqu'elles sont présentes dans la map.
+    """
+    payload = {"running": False, "err": None}
+    payload.update(outputs)
+    emit(payload)
 
 
 def emit_error(message: str):
@@ -122,6 +176,57 @@ def find_ffmpeg() -> Optional[str]:
 
 
 # --------------------------------------------------------------------------
+# Résolution du dispositif de calcul (--device)
+# --------------------------------------------------------------------------
+
+def _mps_available(torch_module) -> bool:
+    """Renvoie True si le backend MPS (GPU Apple Silicon) est utilisable."""
+    return getattr(torch_module.backends, "mps", None) is not None and torch_module.backends.mps.is_available()
+
+
+def resolve_device(device: str) -> str:
+    """
+    Résout le dispositif de calcul effectif à utiliser.
+
+    - "auto" (valeur par défaut) : choisit automatiquement le meilleur
+      dispositif détecté sur la machine, dans l'ordre de préférence
+      cuda > mps > cpu. Aucun avertissement n'est émis dans ce cas, c'est
+      le fonctionnement normal attendu.
+    - "cpu"/"cuda"/"mps" explicite : utilisé tel quel si disponible, sinon
+      repli automatique sur cpu.
+
+    Les messages d'information/avertissement partent sur stderr uniquement :
+    stdout doit rester strictement réservé aux lignes JSON (voir en-tête).
+    """
+    try:
+        import torch
+    except ImportError:
+        # torch sera de toute façon requis par demucs plus loin ; on ne
+        # bloque pas ici, l'erreur explicite remontera au moment voulu.
+        return "cpu" if device == "auto" else device
+
+    if device == "auto":
+        if torch.cuda.is_available():
+            chosen = "cuda"
+        elif _mps_available(torch):
+            chosen = "mps"
+        else:
+            chosen = "cpu"
+        print(f"--device auto : dispositif sélectionné = {chosen}", file=sys.stderr)
+        return chosen
+
+    if device == "cuda" and not torch.cuda.is_available():
+        print("GPU CUDA non détecté, repli sur cpu.", file=sys.stderr)
+        return "cpu"
+
+    if device == "mps" and not _mps_available(torch):
+        print("GPU MPS (Apple Silicon) non détecté, repli sur cpu.", file=sys.stderr)
+        return "cpu"
+
+    return device
+
+
+# --------------------------------------------------------------------------
 # Interception de la progression Demucs (barre tqdm) -> JSON
 # --------------------------------------------------------------------------
 
@@ -136,7 +241,7 @@ class DemucsProgressCapture:
         r"(?P<percent>\d{1,3})%\|.*?\[(?P<elapsed>[\d:]+)<(?P<remaining>[\d:]+)"
     )
 
-    def __init__(self, progress_range=(0, 90)):
+    def __init__(self, progress_range=(0, 70)):
         self._buffer = ""
         self._range_start, self._range_end = progress_range
 
@@ -179,25 +284,76 @@ class DemucsProgressCapture:
 
 
 # --------------------------------------------------------------------------
+# Plan de séparation selon --stems
+# --------------------------------------------------------------------------
+
+def get_stem_plan(stems: int):
+    """
+    Retourne (model, two_stems, tracks) pour le nombre de stems demandé.
+
+    - model      : nom du modèle Demucs à utiliser.
+    - two_stems  : True pour utiliser le mode rapide "--two-stems vocals"
+                   de Demucs (uniquement pertinent/possible pour 2 stems).
+    - tracks     : liste ordonnée de dicts décrivant chaque fichier de
+                   sortie final :
+                     "key"     -> clé utilisée dans le JSON de sortie
+                     "suffix"  -> suffixe du fichier ("<nom>-<suffix>.mp3")
+                     "sources" -> liste des fichiers wav bruts (produits par
+                                  Demucs dans son dossier de stems) à sommer
+                                  pour obtenir cette piste. Une seule entrée
+                                  = pas de mixage, copie directe.
+    """
+    if stems == 2:
+        model = "htdemucs"
+        two_stems = True
+        tracks = [
+            {"key": "voice", "suffix": "voices", "sources": ["vocals.wav"]},
+            {"key": "intruments", "suffix": "instruments", "sources": ["no_vocals.wav"]},
+        ]
+    elif stems == 4:
+        model = "htdemucs"
+        two_stems = False
+        tracks = [
+            {"key": "voice", "suffix": "voices", "sources": ["vocals.wav"]},
+            {"key": "percussions", "suffix": "percussions", "sources": ["drums.wav"]},
+            {"key": "intruments", "suffix": "instruments", "sources": ["bass.wav", "other.wav"]},
+        ]
+    else:  # 6
+        model = "htdemucs_6s"
+        two_stems = False
+        tracks = [
+            {"key": "voice", "suffix": "voices", "sources": ["vocals.wav"]},
+            {"key": "percussions", "suffix": "percussions", "sources": ["drums.wav"]},
+            {"key": "basse", "suffix": "basse", "sources": ["bass.wav"]},
+            {"key": "guitare", "suffix": "guitare", "sources": ["guitar.wav"]},
+            {"key": "piano", "suffix": "piano", "sources": ["piano.wav"]},
+            {"key": "intruments", "suffix": "instruments", "sources": ["other.wav"]},
+        ]
+    return model, two_stems, tracks
+
+
+# --------------------------------------------------------------------------
 # Séparation Demucs
 # --------------------------------------------------------------------------
 
-def run_demucs(input_path: Path, work_dir: Path, model: str = "htdemucs") -> Path:
+def run_demucs(input_path: Path, work_dir: Path, model: str, two_stems: bool, device: str) -> Path:
     """
-    Lance Demucs en mode "two-stems" (vocals / no_vocals) sur le fichier donné.
-    Retourne le dossier contenant vocals.wav et no_vocals.wav.
+    Lance Demucs sur le fichier donné avec le modèle et le dispositif
+    demandés. En mode two_stems=True, seules vocals.wav/no_vocals.wav sont
+    produites (plus rapide). Sinon, Demucs produit tous les stems natifs du
+    modèle (vocals/drums/bass/other, +guitar/piano pour htdemucs_6s).
+
+    Retourne le dossier contenant les fichiers wav bruts.
     """
     from demucs import separate as demucs_separate
 
-    args = [
-        "-n", model,
-        "--two-stems", "vocals",
-        "-o", str(work_dir),
-        str(input_path),
-    ]
+    args = ["-n", model, "--device", device]
+    if two_stems:
+        args += ["--two-stems", "vocals"]
+    args += ["-o", str(work_dir), str(input_path)]
 
     real_stderr = sys.stderr
-    sys.stderr = DemucsProgressCapture(progress_range=(0, 90))
+    sys.stderr = DemucsProgressCapture(progress_range=(0, 70))
     try:
         try:
             demucs_separate.main(args)
@@ -221,6 +377,44 @@ def run_demucs(input_path: Path, work_dir: Path, model: str = "htdemucs") -> Pat
         raise RuntimeError(f"Dossier de sortie Demucs introuvable : {stems_dir}")
 
     return stems_dir
+
+
+def prepare_track_wav(stems_dir: Path, work_dir: Path, sources: List[str]) -> Path:
+    """
+    Retourne le chemin du wav à convertir en mp3 pour une piste donnée.
+
+    - Une seule source -> renvoie directement le fichier produit par Demucs
+      (pas de recopie inutile).
+    - Plusieurs sources -> les additionne (mixage simple), normalise si
+      écrêtage, puis écrit le résultat dans un wav temporaire du work_dir.
+    """
+    if len(sources) == 1:
+        return stems_dir / sources[0]
+
+    mixed = None
+    sample_rate = None
+    for src in sources:
+        data, sr = sf.read(stems_dir / src)
+        if sample_rate is None:
+            sample_rate = sr
+        elif sr != sample_rate:
+            raise RuntimeError(f"Sample rates incohérents entre stems Demucs ({src})")
+
+        data = data.astype(np.float64)
+        if mixed is None:
+            mixed = data
+        else:
+            n = min(len(mixed), len(data))
+            mixed = mixed[:n] + data[:n]
+
+    peak = float(np.max(np.abs(mixed))) if mixed.size else 0.0
+    if peak > 1.0:
+        mixed = mixed / peak
+
+    merged_name = "merged_" + "_".join(Path(s).stem for s in sources) + ".wav"
+    merged_path = work_dir / merged_name
+    sf.write(merged_path, mixed, sample_rate)
+    return merged_path
 
 
 # --------------------------------------------------------------------------
@@ -348,15 +542,33 @@ def copy_id3_tags(source_mp3: Path, target_mp3: Path):
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="demucs_separator",
-        description="Sépare un fichier audio en stems voix/instruments via Demucs.",
+        description="Sépare un fichier audio en stems (2, 4 ou 6) via Demucs.",
     )
-    
+
     parser.add_argument(
         "--version",
         action="version",
         version=f"{__version__}",
-        # version=f"%(prog)s {__version__}",
         help="afficher la version du logiciel et quitter",
+    )
+
+    parser.add_argument(
+        "--stems",
+        type=int,
+        choices=[2, 4, 6],
+        default=2,
+        help="nombre de stems à produire : 2 = voix/instruments (défaut), "
+             "4 = + percussions, 6 = + basse/guitare/piano",
+    )
+
+    parser.add_argument(
+        "--device",
+        type=str,
+        choices=["auto", "cpu", "cuda", "mps"],
+        default="auto",
+        help="dispositif de calcul pour Demucs : auto (défaut, choisit le meilleur "
+             "dispositif disponible : cuda > mps > cpu), ou cpu/cuda/mps explicite. "
+             "Repli automatique sur cpu si le dispositif demandé est indisponible.",
     )
 
     parser.add_argument(
@@ -366,7 +578,14 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
-def process(input_arg: str, ffmpeg_bin: str):
+def process(input_arg: str, ffmpeg_bin: str, stems: int, device: str) -> Dict[str, str]:
+    """
+    Traite le fichier d'entrée et renvoie une map {clé_stem: chemin_mp3}.
+
+    Le contenu de cette map dépend de --stems (voir get_stem_plan) : c'est
+    elle qui détermine ensuite les clés effectivement émises par
+    emit_success(), sans rien coder en dur ici sur le nombre de stems.
+    """
     input_path = Path(input_arg).expanduser().resolve()
 
     if not input_path.is_file():
@@ -376,34 +595,50 @@ def process(input_arg: str, ffmpeg_bin: str):
     base_name = input_path.stem
     is_mp3_source = input_path.suffix.lower() == ".mp3"
 
-    voices_out = output_dir / f"{base_name}-voices.mp3"
-    instruments_out = output_dir / f"{base_name}-instruments.mp3"
+    model, two_stems, tracks = get_stem_plan(stems)
 
     emit_progress(0, None)
 
     work_dir = Path(tempfile.mkdtemp(prefix="demucs_"))
+    results: Dict[str, str] = {}
     try:
-        stems_dir = run_demucs(input_path, work_dir)
+        # --- Étape 1 : séparation Demucs (sorties intermédiaires inchangées) ---
+        stems_dir = run_demucs(input_path, work_dir, model, two_stems, device)
 
-        vocals_wav = stems_dir / "vocals.wav"
-        instruments_wav = stems_dir / "no_vocals.wav"
+        for track in tracks:
+            for src in track["sources"]:
+                if not (stems_dir / src).exists():
+                    raise RuntimeError(f"fichier de stem introuvable après séparation Demucs : {src}")
 
-        if not vocals_wav.exists() or not instruments_wav.exists():
-            raise RuntimeError("fichiers de stems introuvables après séparation Demucs")
+        # --- Étape 2 : mixage éventuel + conversion mp3, une piste à la fois ---
+        # Répartition de la plage de progression restante (70 -> 99) entre
+        # les pistes à produire, quel que soit leur nombre.
+        n_tracks = len(tracks)
+        conv_start, conv_end = 70.0, 99.0
+        slice_width = (conv_end - conv_start) / n_tracks
 
-        convert_to_mp3(ffmpeg_bin, vocals_wav, voices_out, progress_range=(90, 95))
-        convert_to_mp3(ffmpeg_bin, instruments_wav, instruments_out, progress_range=(95, 99))
+        for i, track in enumerate(tracks):
+            wav_path = prepare_track_wav(stems_dir, work_dir, track["sources"])
+            out_mp3 = output_dir / f"{base_name}-{track['suffix']}.mp3"
+
+            range_start = conv_start + i * slice_width
+            range_end = range_start + slice_width
+            convert_to_mp3(
+                ffmpeg_bin, wav_path, out_mp3,
+                progress_range=(round(range_start, 1), round(range_end, 1)),
+            )
+            results[track["key"]] = str(out_mp3)
 
         emit_progress(99, None)
         if is_mp3_source:
-            copy_id3_tags(input_path, voices_out)
-            copy_id3_tags(input_path, instruments_out)
+            for mp3_path_str in results.values():
+                copy_id3_tags(input_path, Path(mp3_path_str))
     finally:
         # Nettoyage systématique des fichiers temporaires Demucs,
         # même en cas d'erreur.
         shutil.rmtree(work_dir, ignore_errors=True)
 
-    return str(voices_out), str(instruments_out)
+    return results
 
 
 def main():
@@ -416,8 +651,9 @@ def main():
                 "ffmpeg introuvable (ni dans le répertoire d'exécution, ni dans le PATH)"
             )
 
-        voices_out, instruments_out = process(args.fichier, ffmpeg_bin)
-        emit_success(voices_out, instruments_out)
+        device = resolve_device(args.device)
+        results = process(args.fichier, ffmpeg_bin, args.stems, device)
+        emit_success(results)
 
     except Exception as e:
         emit_error(str(e))
@@ -425,4 +661,18 @@ def main():
 
 
 if __name__ == "__main__":
+    # Indispensable pour tout exécutable packagé (PyInstaller) qui utilise
+    # multiprocessing en interne (c'est le cas de torch/Demucs, notamment
+    # via le resource_tracker). Sur macOS/Windows, un processus enfant est
+    # relancé en réinvoquant "l'interpréteur Python" avec des flags internes
+    # (-B -S -I -c ...) ; dans un exécutable onefile, il n'y a pas de vrai
+    # interpréteur à relancer, c'est le programme compilé lui-même qui se
+    # relance. Sans freeze_support(), ces flags internes atterrissent dans
+    # notre propre parse_args(), qui les rejette (usage: ... unrecognized
+    # arguments) à chaque processus enfant relancé. freeze_support() les
+    # intercepte avant que notre code ne s'exécute. Doit être appelé en tout
+    # premier, avant tout autre traitement de ce bloc.
+    import multiprocessing
+    multiprocessing.freeze_support()
+
     main()
