@@ -1,0 +1,6 @@
+{
+    "version": "1.0.0",
+    "linux_64": "https://github.com/mickbad/demucs_separator_voices/releases/download/1.0.0/demucs_separator_linux64",
+    "macos_silicon": "https://github.com/mickbad/demucs_separator_voices/releases/download/1.0.0/demucs_separator_macos_arm64",
+    "windows_64": "https://github.com/mickbad/demucs_separator_voices/releases/download/1.0.0/demucs_separator_win64.exe"
+}

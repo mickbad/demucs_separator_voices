@@ -302,8 +302,6 @@ Sur **toutes les plateformes** (Windows, Linux, macOS) :
 
 ### Note sur torch/torchaudio — pourquoi les versions sont épinglées
 
-**OBSOLETE AVEC VERSION 2.14**
-
 `requirements.txt` fixe volontairement `torch==2.5.1` et `torchaudio==2.5.1`
 (au lieu de simples bornes minimales). C'est nécessaire car **depuis
 torchaudio 2.9**, les fonctions `torchaudio.save()`/`load()` (utilisées en
