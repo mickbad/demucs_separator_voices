@@ -57,9 +57,6 @@ from pathlib import Path
 from typing import Optional, Dict, List
 from datetime import timedelta
 
-import numpy as np
-import soundfile as sf
-
 __version__ = "2.0.0"
 
 
@@ -388,6 +385,10 @@ def prepare_track_wav(stems_dir: Path, work_dir: Path, sources: List[str]) -> Pa
     - Plusieurs sources -> les additionne (mixage simple), normalise si
       écrêtage, puis écrit le résultat dans un wav temporaire du work_dir.
     """
+    # importation des libs
+    import numpy as np
+    import soundfile as sf
+
     if len(sources) == 1:
         return stems_dir / sources[0]
 
