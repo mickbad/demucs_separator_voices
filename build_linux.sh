@@ -44,19 +44,20 @@ echo "[3/5] Installation de torch/torchaudio en version CPU-only..."
 # IMPORTANT : on force l'index CPU de PyTorch pour éviter ~2.5-3 Go
 # de dépendances CUDA (nvidia-cublas, nvidia-cudnn, nvidia-cusparse, etc.)
 pip install \
-    torch==2.5.1 \
-    torchaudio==2.5.1 \
+    torch==2.9.0+cpu \
+    torchaudio==2.9.0+cpu \
     --index-url https://download.pytorch.org/whl/cpu
 
 # Fichier de contraintes : empêche pip de ré-installer une version CUDA
 # de torch quand il résoudra les dépendances de demucs juste après.
 cat > constraints.txt <<EOF
-torch==2.5.1
-torchaudio==2.5.1
+torch==2.9.0
+torchaudio==2.9.0
 EOF
 
 echo "[4/5] Installation des autres dépendances (avec contrainte torch CPU)..."
-pip install -r requirements.txt -c constraints.txt
+pip install -r requirements-linux.txt -c constraints.txt
+# pip install -r requirements-linux.txt
 
 # --- Vérification que torch est bien en CPU-only ---
 echo ""
