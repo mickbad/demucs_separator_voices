@@ -36,6 +36,10 @@ echo [2/4] Installation des dependances...
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 
+rem pip uninstall torch torchaudio -y
+rem pip cache purge
+rem pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+
 echo [3/4] Compilation avec PyInstaller...
 pyinstaller  ^
   --onefile  ^
